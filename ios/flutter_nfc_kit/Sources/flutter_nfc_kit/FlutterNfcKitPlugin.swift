@@ -61,6 +61,19 @@ public class FlutterNfcKitPlugin: NSObject, FlutterPlugin, NFCTagReaderSessionDe
         }
     }
 
+    /// Deliver an operation-callback error after a brief delay so that
+    /// `didInvalidateWithError` — which carries the more specific session
+    /// reason (e.g. UserCanceled) — can race ahead and clear `self.result`
+    /// via the `trackResult` wrapper. Without the delay, a generic
+    /// `tagConnectionLost` from the in-flight tag command wins and the real
+    /// cancellation reason is dropped.
+    private func deliverOperationError(_ error: Error, to result: @escaping FlutterResult) {
+        let mapped = mapNFCError(error)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            result(mapped)
+        }
+    }
+
     /// Track an operation's result so it completes exactly once — either by the
     /// operation's own callback or by session invalidation. Returns a wrapped
     /// FlutterResult; shadow the local `result` with it so the existing
@@ -147,7 +160,7 @@ public class FlutterNfcKitPlugin: NSObject, FlutterPlugin, NFCTagReaderSessionDe
                         }
                         tag.sendCommand(apdu: apdu!) { (response: Data, sw1: UInt8, sw2: UInt8, error: Error?) in
                             if let error = error {
-                                result(FlutterError(code: "500", message: "Communication error with iso7816 tag", details: error.localizedDescription))
+                                self.deliverOperationError(error, to: result)
                             } else {
                                 var response = response
                                 response.append(contentsOf: [sw1, sw2])
@@ -167,7 +180,7 @@ public class FlutterNfcKitPlugin: NSObject, FlutterPlugin, NFCTagReaderSessionDe
                         // the first byte in data is length, and iOS will add it for us, so skip it
                         tag.sendFeliCaCommand(commandPacket: data.advanced(by: 1)) { (response: Data, error: Error?) in
                             if let error = error {
-                                result(FlutterError(code: "500", message: "Communication error with felica tag", details: error.localizedDescription))
+                                self.deliverOperationError(error, to: result)
                             } else {
                                 if req is String {
                                     result(response.hexEncodedString())
@@ -179,7 +192,7 @@ public class FlutterNfcKitPlugin: NSObject, FlutterPlugin, NFCTagReaderSessionDe
                     case let .miFare(tag):
                         tag.sendMiFareCommand(commandPacket: data) { (response: Data, error: Error?) in
                             if let error = error {
-                                result(FlutterError(code: "500", message: "Communication error with mifare tag", details: error.localizedDescription))
+                                self.deliverOperationError(error, to: result)
                             } else {
                                 if req is String {
                                     result(response.hexEncodedString())
@@ -198,7 +211,7 @@ public class FlutterNfcKitPlugin: NSObject, FlutterPlugin, NFCTagReaderSessionDe
                             tag.sendRequest(requestFlags: Int(data[0]), commandCode: Int(data[1]), data: data.advanced(by: 2)) { (res: Result<(NFCISO15693ResponseFlag, Data?), Error>) in
                                 switch (res) {
                                 case let .failure(err):
-                                    result(FlutterError(code: "500", message: "Communication error", details: err.localizedDescription))
+                                    self.deliverOperationError(err, to: result)
                                 case let .success((flags, data)):
                                     var response = Data()
                                     response.append(flags.rawValue)
@@ -233,7 +246,7 @@ public class FlutterNfcKitPlugin: NSObject, FlutterPlugin, NFCTagReaderSessionDe
                 let extendedMode = (arguments["iso15693ExtendedMode"] as? Bool) ?? false
                 let handler = { (dataBlock: Data, error: Error?) in
                     if let error = error {
-                        result(FlutterError(code: "500", message: "Cannot read iso15693 tag", details: error.localizedDescription))
+                        self.deliverOperationError(error, to: result)
                     } else {
                         result(dataBlock)
                     }
@@ -251,7 +264,7 @@ public class FlutterNfcKitPlugin: NSObject, FlutterPlugin, NFCTagReaderSessionDe
                 let commandPacket = Data([0x30, blockNumber]) // MiFARE Classic / Ultralight READ command
                 tag.sendMiFareCommand(commandPacket: commandPacket) { (data, error) in
                     if let error = error {
-                        result(FlutterError(code: "500", message: "Cannot read mifare tag", details: error.localizedDescription))
+                        self.deliverOperationError(error, to: result)
                     } else {
                         result(data)
                     }
@@ -269,7 +282,7 @@ public class FlutterNfcKitPlugin: NSObject, FlutterPlugin, NFCTagReaderSessionDe
                 let extendedMode = (arguments["iso15693ExtendedMode"] as? Bool) ?? false
                 let handler = { (error: Error?) in
                     if let error = error {
-                        result(FlutterError(code: "500", message: "Cannot write iso15693 tag", details: error.localizedDescription))
+                        self.deliverOperationError(error, to: result)
                     } else {
                         result(nil)
                     }
@@ -293,7 +306,7 @@ public class FlutterNfcKitPlugin: NSObject, FlutterPlugin, NFCTagReaderSessionDe
                 let writeCommand = Data([command, blockNumber]) + data
                 tag.sendMiFareCommand(commandPacket: writeCommand) { (response, error) in
                     if let error = error {
-                        result(FlutterError(code: "500", message: "Cannot write mifare tag", details: error.localizedDescription))
+                        self.deliverOperationError(error, to: result)
                     } else {
                         result(nil)
                     }
@@ -324,7 +337,7 @@ public class FlutterNfcKitPlugin: NSObject, FlutterPlugin, NFCTagReaderSessionDe
                             // NDEF tag does not contain any NDEF message
                             result("[]")
                         } else if let error = error {
-                            result(FlutterError(code: "500", message: "Read NDEF error", details: error.localizedDescription))
+                            self.deliverOperationError(error, to: result)
                         } else if let msg = msg {
                             var records: [[String: Any]] = []
                             
@@ -417,7 +430,7 @@ public class FlutterNfcKitPlugin: NSObject, FlutterPlugin, NFCTagReaderSessionDe
                         
                         ndefTag!.writeNDEF(NFCNDEFMessage(records: records)) { (error: Error?) in
                             if let error = error {
-                                result(FlutterError(code: "500", message: "Write NDEF error", details: error.localizedDescription))
+                                self.deliverOperationError(error, to: result)
                             } else {
                                 result(nil)
                             }
@@ -481,7 +494,7 @@ public class FlutterNfcKitPlugin: NSObject, FlutterPlugin, NFCTagReaderSessionDe
                 if ndefTag != nil {
                     ndefTag!.writeLock() { (error: Error?) in
                         if let error = error {
-                            result(FlutterError(code: "500", message: "Lock NDEF error", details: error.localizedDescription))
+                            self.deliverOperationError(error, to: result)
                         } else {
                             result(nil)
                         }
