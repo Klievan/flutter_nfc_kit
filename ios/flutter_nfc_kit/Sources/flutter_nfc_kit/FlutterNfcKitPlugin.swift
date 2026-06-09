@@ -68,6 +68,8 @@ public class FlutterNfcKitPlugin: NSObject, FlutterPlugin, NFCTagReaderSessionDe
     /// `tagConnectionLost` from the in-flight tag command wins and the real
     /// cancellation reason is dropped.
     private func deliverOperationError(_ error: Error, to result: @escaping FlutterResult) {
+        let code = (error as? NFCReaderError)?.errorCode ?? -1
+        NSLog("NFC op error: code=%d desc=%@", code, error.localizedDescription)
         let mapped = mapNFCError(error)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
             result(mapped)
@@ -516,7 +518,8 @@ public class FlutterNfcKitPlugin: NSObject, FlutterPlugin, NFCTagReaderSessionDe
     
     // from NFCTagReaderSessionDelegate
     public func tagReaderSession(_: NFCTagReaderSession, didInvalidateWithError error: Error) {
-        NSLog("NFC session invalidated: %@", error.localizedDescription)
+        let code = (error as? NFCReaderError)?.errorCode ?? -1
+        NSLog("NFC session invalidated: code=%d desc=%@", code, error.localizedDescription)
         // Deliver the session error to the pending operation (poll or any in-flight
         // tag operation tracked via trackResult), if it has not completed already.
         if result != nil {
